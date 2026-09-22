@@ -29,7 +29,7 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
 
 
 def format_output(result):
-    """Format results for Claude consumption (token-optimized)"""
+    """Format results for token-optimized consumption."""
     if "error" in result:
         return f"Error: {result['error']}"
 
@@ -217,8 +217,10 @@ def wcag_check(query):
 
 
 if __name__ == "__main__":
+    import sys as _sys
+    _diag_mode = any(a in _sys.argv for a in ("--cache-stats", "--clear-cache"))
     parser = argparse.ArgumentParser(description="UI UX CR Search v2 - Cyber-Rage Design Intelligence Engine")
-    parser.add_argument("query", help="Search query")
+    parser.add_argument("query", nargs="?", default="", help="Search query")
     parser.add_argument("--domain", "-d", choices=list(CSV_CONFIG.keys()), help="Search domain")
     parser.add_argument("--stack", "-s", choices=AVAILABLE_STACKS, help="Stack-specific search")
     parser.add_argument("--max-results", "-n", type=int, default=MAX_RESULTS, help="Max results (default: 3)")
@@ -235,8 +237,25 @@ if __name__ == "__main__":
     parser.add_argument("--export-tailwind", action="store_true", help="Export Tailwind config")
     parser.add_argument("--wcag", action="store_true", help="WCAG contrast check")
     parser.add_argument("--color-palette", action="store_true", help="Generate color palette")
+    parser.add_argument("--cache-stats", action="store_true", help="Show BM25 cache effectiveness")
+    parser.add_argument("--clear-cache", action="store_true", help="Reset the BM25 index cache")
+    parser.add_argument("--explain", action="store_true", help="Include score + cache info in JSON output")
+    parser.add_argument("--harmony", choices=["complementary", "analogous", "triadic", "split_complementary", "tetradic", "monochromatic"], default=None, help="Harmony type for --color-palette")
 
     args = parser.parse_args()
+
+    if args.cache_stats:
+        from core import cache_stats
+        print(json.dumps(cache_stats(), indent=2))
+        sys.exit(0)
+    if args.clear_cache:
+        from core import clear_cache
+        clear_cache()
+        print("Cache cleared.")
+        sys.exit(0)
+
+    if not args.query:
+        parser.error("the following arguments are required: query")
 
     if args.export_css:
         print(export_css_variables(args.query))
@@ -245,15 +264,18 @@ if __name__ == "__main__":
     elif args.wcag:
         print(wcag_check(args.query))
     elif args.color_palette:
-        from color_tools import generate_palette, format_palette_output
+        from color_tools import generate_palette, format_palette_output, suggest_palette_for_product, accessible_pair
         result = search(args.query, "color", 1)
         colors = result.get("results", [])
         if colors:
             primary = colors[0].get("Primary (Hex)", "#2563EB")
-            palette = generate_palette(primary)
-            print(format_palette_output(palette, args.format if args.format != "ascii" else "ascii"))
         else:
-            print("No color data found for query. Try a different query.")
+            primary = suggest_palette_for_product(args.query)
+        harmony = args.harmony or "complementary"
+        palette = generate_palette(primary, harmony=harmony)
+        print(format_palette_output(palette, args.format if args.format != "ascii" else "ascii"))
+        pair = accessible_pair(primary)
+        print(f"\nReadable pair: text={pair['text']} on {pair['background']} (ratio {pair['ratio']}:1)")
     elif args.analyze:
         print(analyze_project(args.query))
     elif args.design_system:
@@ -299,6 +321,10 @@ if __name__ == "__main__":
     else:
         result = search(args.query, args.domain, args.max_results)
         if args.json:
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            payload = dict(result)
+            if args.explain:
+                from core import cache_stats
+                payload["_cache_stats"] = cache_stats()
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
         else:
             print(format_output(result))

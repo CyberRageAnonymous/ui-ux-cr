@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-UI UX CR Core v2.0 - Ultra-premium search engine with advanced BM25,
-fuzzy matching, n-gram support, semantic ranking, and Persian keywords
-Cyber-Rage Design Intelligence Engine
+UI UX CR Core v3.2 - High-performance search engine with adaptive BM25,
+fuzzy matching, n-gram support, semantic ranking, persistent caching,
+context enrichment, and category-aware weighting.
+Cyber-Rage Design Intelligence Engine.
 """
 
 import csv
 import re
 import json
+import hashlib
 from pathlib import Path
 from math import log, sqrt
 from collections import defaultdict
@@ -114,9 +116,79 @@ STACK_CONFIG = {
 }
 
 _STACK_COLS = {
+    "search_cols": ["Category", "Guideline", "Description", "Do", "Don't", "Keywords"],
+    "output_cols": ["No", "Category", "Guideline", "Description", "Do", "Don't", "Code Good", "Code Bad", "Severity", "Docs URL"],
 }
 
 AVAILABLE_STACKS = list(STACK_CONFIG.keys())
+
+_INDEX_CACHE = {}
+_QUERY_CACHE = {}
+_CACHE_HITS = 0
+_CACHE_MISSES = 0
+_CACHE_DIR = Path.home() / ".cache" / "ui-ux-cr"
+_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_USE_PERSISTENT_CACHE = True
+
+
+def _cache_key(*parts):
+    """Stable cache key from arbitrary string parts."""
+    raw = "|".join(str(p) for p in parts)
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def _persist_get(key):
+    if not _USE_PERSISTENT_CACHE:
+        return None
+    path = _CACHE_DIR / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _persist_set(key, value):
+    if not _USE_PERSISTENT_CACHE:
+        return
+    try:
+        with open(_CACHE_DIR / f"{key}.json", "w", encoding="utf-8") as f:
+            json.dump(value, f, ensure_ascii=False, default=str)
+    except OSError:
+        pass
+
+
+def cache_stats():
+    """Return current cache effectiveness stats."""
+    total = _CACHE_HITS + _CACHE_MISSES
+    rate = (_CACHE_HITS / total * 100.0) if total else 0.0
+    return {
+        "hits": _CACHE_HITS,
+        "misses": _CACHE_MISSES,
+        "total": total,
+        "hit_rate_pct": round(rate, 2),
+        "indexes_cached": len(_INDEX_CACHE),
+        "queries_cached": len(_QUERY_CACHE),
+        "persistent_dir": str(_CACHE_DIR),
+        "persistent_entries": len(list(_CACHE_DIR.glob("*.json"))) if _CACHE_DIR.exists() else 0,
+    }
+
+
+def clear_cache():
+    """Reset both in-memory and on-disk caches."""
+    global _CACHE_HITS, _CACHE_MISSES
+    _INDEX_CACHE.clear()
+    _QUERY_CACHE.clear()
+    _CACHE_HITS = 0
+    _CACHE_MISSES = 0
+    if _CACHE_DIR.exists():
+        for p in _CACHE_DIR.glob("*.json"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
 
 
 def levenshtein_distance(s1, s2):
@@ -256,8 +328,23 @@ class EnhancedBM25:
         }
 
     def _build_category_keywords(self):
+        """Per-domain category keyword boosts used during scoring."""
         return {
-            "realestate": ["property", "house", "apartment", "rent", "mortgage", "realtor"],
+            "realestate": ["property", "house", "apartment", "rent", "mortgage", "realtor", "realty", "listing"],
+            "healthcare": ["clinic", "patient", "doctor", "medical", "hipaa", "ehr", "emr", "telemedicine"],
+            "fintech": ["bank", "trading", "crypto", "wallet", "kyc", "aml", "ledger", "stock"],
+            "education": ["lms", "course", "student", "teacher", "curriculum", "tutorial", "lesson"],
+            "ecommerce": ["shop", "cart", "checkout", "product", "sku", "storefront", "shopify"],
+            "gaming": ["esports", "console", "leaderboard", "lobby", "match", "tournament", "achievement"],
+            "media": ["video", "streaming", "podcast", "broadcast", "studio", "channel"],
+            "social": ["feed", "post", "follower", "like", "share", "story", "reel"],
+            "iot": ["sensor", "device", "telemetry", "firmware", "embedded"],
+            "blockchain": ["nft", "defi", "dao", "token", "wallet", "smart contract", "web3"],
+            "analytics": ["kpi", "metric", "report", "dashboard", "visualization", "aggregation"],
+            "marketing": ["campaign", "landing", "funnel", "lead", "conversion", "seo", "growth"],
+            "productivity": ["task", "todo", "kanban", "calendar", "notes", "workflow"],
+            "creative": ["design tool", "editor", "canvas", "illustration", "prototype"],
+            "developer": ["api", "sdk", "cli", "ide", "debugger", "devtool", "scaffold"],
         }
 
     def _expand_query(self, query):
@@ -425,40 +512,73 @@ def _search_csv(filepath, search_cols, output_cols, query, max_results):
 
 
 def detect_domain(query):
-    """Auto-detect the most relevant domain from query with weighted scoring"""
+    """Auto-detect the most relevant domain from query with weighted scoring.
+
+    Supports partial / substring matching and phrase priority so compound
+    terms like 'dark mode dashboard' route to the right domain even when
+    no exact keyword is present.
+    """
     query_lower = query.lower()
+    tokens = [t for t in re.split(r"\s+", query_lower) if t]
 
     domain_keywords = {
-        "color": ["color", "palette", "hex", "#", "rgb", "hsl", "scheme", "hue", "saturation", "shade", "tint"],
-        "product": ["saas", "ecommerce", "e-commerce", "fintech", "healthcare", "gaming", "portfolio", "crypto", "dashboard", "app", "platform", "product type"],
-        "style": ["style", "design", "ui", "minimalism", "glassmorphism", "neumorphism", "brutalism", "dark mode", "flat", "aurora", "prompt", "css", "implementation", "variable", "checklist", "tailwind", "theme", "visual", "cyberpunk", "3d"],
-        "typography": ["font", "typography", "heading", "serif", "sans", "typeface", "lettering", "text", "font pairing", "google fonts"],
+        "color": ["color", "palette", "hex", "#", "rgb", "hsl", "scheme", "hue", "saturation", "shade", "tint", "tone"],
+        "product": ["saas", "ecommerce", "e-commerce", "fintech", "healthcare", "gaming", "portfolio", "crypto", "dashboard", "platform", "marketplace"],
+        "style": ["style", "design", "ui", "minimalism", "glassmorphism", "neumorphism", "brutalism", "flat", "aurora", "css", "implementation", "tailwind", "theme", "visual", "cyberpunk", "bento", "skeuomorphic", "editorial", "claymorphism"],
+        "typography": ["font", "typography", "heading", "serif", "sans", "typeface", "lettering", "font pairing", "google fonts"],
         "icons": ["icon", "icons", "lucide", "heroicons", "symbol", "glyph", "pictogram", "svg icon", "icon set", "iconography"],
         "react": ["react", "next.js", "nextjs", "suspense", "memo", "usecallback", "useeffect", "rerender", "bundle", "waterfall", "barrel", "dynamic import", "rsc", "server component"],
-        "web": ["aria", "focus", "outline", "semantic", "virtualize", "autocomplete", "form", "input type", "preconnect", "viewport"],
+        "web": ["aria", "focus", "outline", "semantic", "virtualize", "autocomplete", "input type", "preconnect", "viewport", "keyboard"],
         "component": ["component", "button", "card", "modal", "dropdown", "input", "form", "widget", "element", "building block", "component library"],
-        "design_token": ["token", "design system", "variable", "css variable", "spacing", "shadow", "border radius", "color token", "design token"],
-        "background": ["background", "gradient", "pattern", "texture", "mesh", "aurora", "noise", "dot", "grid", "wave", "hexagon", "crt", "scanlines", "neon", "glow", "blob", "parallax", "video bg", "particles"]
+        "design_token": ["token", "design system", "css variable", "spacing", "shadow", "border radius", "color token", "design token"],
+        "background": ["background", "gradient", "pattern", "texture", "mesh", "aurora", "noise", "dot", "wave", "hexagon", "crt", "scanlines", "neon", "glow", "blob", "parallax", "particles"],
+        "animation": ["animation", "animate", "transition", "keyframe", "easing", "spring", "motion"],
+        "responsive": ["responsive", "mobile-first", "breakpoint", "adaptive"],
+        "chart": ["chart", "graph", "visualization", "data viz", "plot"],
+        "ux": ["ux", "usability", "user experience", "interaction", "user journey"],
+        "landing": ["landing", "hero", "cta", "conversion", "testimonial", "pricing", "section"],
     }
 
-    scores = {}
+    scores = defaultdict(float)
     for domain, keywords in domain_keywords.items():
-        score = 0
         for kw in keywords:
             if kw in query_lower:
-                # Exact phrase matches get higher weight
-                if " " in kw and kw in query_lower:
-                    score += 3
+                if " " in kw or len(kw) > 6:
+                    scores[domain] += 3.0
                 else:
-                    score += 1
-        scores[domain] = score
+                    scores[domain] += 1.0
+            else:
+                for tok in tokens:
+                    if len(tok) >= 4 and (tok in kw or kw in tok):
+                        scores[domain] += 0.5
+                        break
 
+    if not scores:
+        return "style"
     best = max(scores, key=scores.get)
     return best if scores[best] > 0 else "style"
 
 
+def _index_for(filepath):
+    """Build or fetch a cached BM25 index for a CSV file (memory + disk)."""
+    global _CACHE_HITS, _CACHE_MISSES
+    key = str(filepath)
+    if key in _INDEX_CACHE:
+        _CACHE_HITS += 1
+        return _INDEX_CACHE[key]
+
+    _CACHE_MISSES += 1
+    data = _load_csv(filepath)
+    documents = [" ".join(str(row.get(col, "")) for col in (data[0].keys() if data else [])) for row in data]
+    bm25 = EnhancedBM25()
+    bm25.fit(documents)
+    _INDEX_CACHE[key] = (bm25, data)
+    return bm25, data
+
+
 def search(query, domain=None, max_results=MAX_RESULTS):
-    """Main search function with auto-domain detection"""
+    """Main search function with auto-domain detection, memory + disk caching."""
+    global _CACHE_HITS, _CACHE_MISSES
     if domain is None:
         domain = detect_domain(query)
 
@@ -468,28 +588,78 @@ def search(query, domain=None, max_results=MAX_RESULTS):
     if not filepath.exists():
         return {"error": f"File not found: {filepath}", "domain": domain}
 
-    results = _search_csv(filepath, config["search_cols"], config["output_cols"], query, max_results)
+    qkey = _cache_key("search", domain, query.lower(), max_results)
 
-    return {
+    if qkey in _QUERY_CACHE:
+        _CACHE_HITS += 1
+        cached = dict(_QUERY_CACHE[qkey])
+        cached["cache"] = "hit-memory"
+        return cached
+
+    persisted = _persist_get(qkey)
+    if persisted is not None:
+        _CACHE_HITS += 1
+        _QUERY_CACHE[qkey] = persisted
+        cached = dict(persisted)
+        cached["cache"] = "hit-disk"
+        return cached
+    _CACHE_MISSES += 1
+
+    bm25, data = _index_for(filepath)
+    ranked = bm25.score(query)
+    if ranked and ranked[0][1] > 0:
+        threshold = ranked[0][1] * 0.1
+    else:
+        threshold = 0
+
+    results = []
+    seen_combinations = set()
+    for idx, score in ranked[:max_results]:
+        if score > threshold:
+            row = data[idx]
+            result = {col: row.get(col, "") for col in config["output_cols"] if col in row}
+            result_str = str(result)[:100]
+            if result_str not in seen_combinations:
+                seen_combinations.add(result_str)
+                result["_score"] = round(float(score), 3)
+                results.append(result)
+
+    payload = {
         "domain": domain,
         "query": query,
         "file": config["file"],
         "count": len(results),
-        "results": results
+        "results": results,
+        "cache": "miss",
     }
+    _QUERY_CACHE[qkey] = payload
+    _persist_set(qkey, payload)
+    return dict(payload)
 
 
 def search_stack(query, stack, max_results=MAX_RESULTS):
-    """Search stack-specific guidelines"""
+    """Search stack-specific guidelines."""
     if stack not in STACK_CONFIG:
         return {"error": f"Unknown stack: {stack}. Available: {', '.join(AVAILABLE_STACKS)}"}
 
     filepath = DATA_DIR / STACK_CONFIG[stack]["file"]
-
     if not filepath.exists():
         return {"error": f"Stack file not found: {filepath}", "stack": stack}
 
-    results = _search_csv(filepath, _STACK_COLS["search_cols"], _STACK_COLS["output_cols"], query, max_results)
+    bm25, data = _index_for(filepath)
+    ranked = bm25.score(query)
+    if ranked and ranked[0][1] > 0:
+        threshold = ranked[0][1] * 0.1
+    else:
+        threshold = 0
+
+    results = []
+    for idx, score in ranked[:max_results]:
+        if score > threshold:
+            row = data[idx]
+            result = {col: row.get(col, "") for col in _STACK_COLS["output_cols"] if col in row}
+            result["_score"] = round(float(score), 3)
+            results.append(result)
 
     return {
         "domain": "stack",
@@ -497,7 +667,7 @@ def search_stack(query, stack, max_results=MAX_RESULTS):
         "query": query,
         "file": STACK_CONFIG[stack]["file"],
         "count": len(results),
-        "results": results
+        "results": results,
     }
 
 

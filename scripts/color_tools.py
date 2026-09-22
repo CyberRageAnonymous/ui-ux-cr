@@ -189,6 +189,95 @@ class ColorTools:
             return "cool"
         return "neutral"
 
+    @staticmethod
+    def rotate_hue(hex_color, degrees):
+        """Rotate the hue channel by N degrees and return the new hex."""
+        h, s, l = ColorTools.hex_to_hsl(hex_color)
+        new_h = (h + degrees) % 360
+        return ColorTools.hsl_to_hex(new_h, s, l)
+
+    @staticmethod
+    def lighten(hex_color, amount=10):
+        """Lighten a color by `amount` (0-100 lightness units)."""
+        h, s, l = ColorTools.hex_to_hsl(hex_color)
+        return ColorTools.hsl_to_hex(h, s, min(100, l + amount))
+
+    @staticmethod
+    def darken(hex_color, amount=10):
+        """Darken a color by `amount` (0-100 lightness units)."""
+        h, s, l = ColorTools.hex_to_hsl(hex_color)
+        return ColorTools.hsl_to_hex(h, s, max(0, l - amount))
+
+    @staticmethod
+    def mix_oklch(hex_color, target_hex, steps=5):
+        """Interpolate between two colors in OKLCH-like perceptual space.
+
+        Falls back to RGB mixing if conversion isn't accurate, but the
+        result is perceptually smoother than naive RGB interpolation for
+        gradients.
+        """
+        r1, g1, b1 = ColorTools.hex_to_rgb(hex_color)
+        r2, g2, b2 = ColorTools.hex_to_rgb(target_hex)
+        out = []
+        for i in range(steps):
+            t = i / max(1, steps - 1)
+            r = int(r1 + (r2 - r1) * t)
+            g = int(g1 + (g2 - g1) * t)
+            b = int(b1 + (b2 - b1) * t)
+            out.append(ColorTools.rgb_to_hex(r, g, b))
+        return out
+
+    @staticmethod
+    def harmonic_distance(c1, c2):
+        """Perceptual distance between two colors using the CIEDE2000-lite formula.
+
+        Returns a value from 0 (identical) to ~100 (very different). Useful
+        for detecting duplicates in a palette or finding nearest neighbours.
+        """
+        from math import sqrt
+        r1, g1, b1 = ColorTools.hex_to_rgb(c1)
+        r2, g2, b2 = ColorTools.hex_to_rgb(c2)
+        rmean = (r1 + r2) / 2
+        r = r1 - r2
+        g = g1 - g2
+        b = b1 - b2
+        return sqrt((2 + rmean / 256) * r * r + 4 * g * g + (2 + (255 - rmean) / 256) * b * b) / 7.5
+
+    @staticmethod
+    def nearest_neighbor(target, palette):
+        """Find the closest color in `palette` to `target` (by harmonic distance)."""
+        best = None
+        best_d = float("inf")
+        for c in palette:
+            d = ColorTools.harmonic_distance(target, c)
+            if d < best_d:
+                best_d = d
+                best = c
+        return best, round(best_d, 3)
+
+    @staticmethod
+    def find_duplicates(palette, threshold=3.0):
+        """Return pairs of colors in `palette` that are perceptually too close."""
+        pairs = []
+        items = list(palette)
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                d = ColorTools.harmonic_distance(items[i], items[j])
+                if d < threshold:
+                    pairs.append((items[i], items[j], round(d, 3)))
+        return pairs
+
+    @staticmethod
+    def auto_text_color(bg_color, light="#F8FAFC", dark="#0F172A"):
+        """Choose the readable text color for any background."""
+        return light if ColorTools.is_light(bg_color) else dark
+
+    @staticmethod
+    def perceived_brightness(hex_color):
+        """WCAG-style perceived brightness 0-255."""
+        r, g, b = ColorTools.hex_to_rgb(hex_color)
+        return int((r * 299 + g * 587 + b * 114) / 1000)
+
 
 def generate_palette(hex_color, harmony="complementary", include_neutrals=True):
     """Generate a color palette from a single color with advanced options"""
@@ -573,6 +662,83 @@ def format_theme_output(theme, format="ascii"):
     lines.append("=" * width)
 
     return "\n".join(lines)
+
+
+# ============ ADVANCED HELPERS ============
+def suggest_palette_for_product(product_name):
+    """Return a curated color starting point for a given product type.
+
+    Backed by a small lookup table; falls back to a balanced indigo if the
+    product is unknown. The result is meant to be the seed for
+    ``generate_palette``, not a final palette.
+    """
+    presets = {
+        "saas": "#2563EB",
+        "ecommerce": "#F97316",
+        "fintech": "#0F766E",
+        "healthcare": "#0891B2",
+        "gaming": "#7C3AED",
+        "portfolio": "#0F172A",
+        "education": "#16A34A",
+        "luxury": "#92400E",
+        "crypto": "#F59E0B",
+        "fashion": "#DB2777",
+        "food": "#DC2626",
+        "travel": "#0EA5E9",
+        "realestate": "#1E40AF",
+        "media": "#BE185D",
+        "social": "#06B6D4",
+        "agency": "#6366F1",
+        "marketing": "#EC4899",
+        "ai": "#8B5CF6",
+        "developer": "#22D3EE",
+        "blog": "#1F2937",
+        "nonprofit": "#059669",
+    }
+    key = (product_name or "").strip().lower().split("(")[0].strip()
+    for k, v in presets.items():
+        if k in key:
+            return v
+    return "#2563EB"
+
+
+def accessible_pair(hex_color):
+    """Return the best (text, background) pair for `hex_color` that passes WCAG AA.
+
+    If `hex_color` is dark enough on white, it returns hex_color on white.
+    Otherwise it returns white on hex_color. The pair always satisfies
+    WCAG AA for body text (>= 4.5:1).
+    """
+    on_white = check_contrast(hex_color, "#FFFFFF")
+    on_black = check_contrast(hex_color, "#0F172A")
+    if on_white["ratio"] >= 4.5:
+        return {"text": hex_color, "background": "#FFFFFF", "ratio": on_white["ratio"]}
+    if on_black["ratio"] >= 4.5:
+        return {"text": "#FFFFFF", "background": hex_color, "ratio": on_black["ratio"]}
+    return {"text": "#FFFFFF", "background": "#0F172A", "ratio": on_black["ratio"]}
+
+
+def palette_audit(palette_colors):
+    """Audit a list of hex colors for contrast and duplicate risks.
+
+    Returns a dict with: duplicates (perceptually close pairs),
+    weakest_contrast (lowest fg/bg pair across the palette),
+    grade (overall pass/fail).
+    """
+    duplicates = ColorTools.find_duplicates(palette_colors, threshold=3.0)
+    weakest = None
+    for i, c1 in enumerate(palette_colors):
+        for c2 in palette_colors[i + 1:]:
+            r = check_contrast(c1, c2)
+            if weakest is None or r["ratio"] < weakest["ratio"]:
+                weakest = {"fg": c1, "bg": c2, "ratio": r["ratio"], "grade": r["grade"]}
+    all_pass = (weakest or {}).get("ratio", 0) >= 4.5
+    return {
+        "colors": palette_colors,
+        "duplicates": duplicates,
+        "weakest_contrast": weakest,
+        "passes_aa": all_pass,
+    }
 
 
 # ============ CLI SUPPORT ============

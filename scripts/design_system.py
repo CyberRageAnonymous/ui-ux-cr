@@ -1147,7 +1147,7 @@ def format_master_md(design_system):
 
 
 def format_page_override_md(design_system, page_name, page_query=None):
-    """Format a page-specific override file with intelligent AI-generated content."""
+    """Format a page-specific override file with curated, structured content."""
     project = design_system.get("project_name", "PROJECT")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     page_title = page_name.replace("-", " ").replace("_", " ").title()
