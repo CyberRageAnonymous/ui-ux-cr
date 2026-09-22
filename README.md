@@ -2,7 +2,7 @@
 
 # 🔥 UI UX CR — Cyber-Rage Design Intelligence Engine
 
-**Ultra-premium design intelligence for AI assistants — 29 tools in one skill.**
+**Ultra-premium design intelligence engine — 29 tools in one skill.**
 
 <a href="https://github.com/CyebRageAnonymuos/ui-ux-cr/releases"><img src="https://img.shields.io/badge/version-3.1.0-FF006E?style=for-the-badge" alt="Version"></a>
 <img src="https://img.shields.io/badge/python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
@@ -159,7 +159,7 @@ cd ui-ux-cr
 python3 --version   # needs Python 3.x
 ```
 
-**As an AI skill (opencode / Claude):**
+**As a skill bundle (any agent harness that loads `SKILL.md`):**
 
 ```bash
 mkdir -p .opencode/skills/ui-ux-cr
@@ -267,7 +267,7 @@ python3 scripts/palette_generator.py "#1C1917" --harmony tetradic --check-wcag
 
 <div align="center">
 
-**Built with passion by Cyber-Rage** — making AI-powered design accessible to everyone.
+**Built with passion by Cyber-Rage** — making premium design tooling accessible to everyone.
 
 [CyebRageAnonymuos/ui-ux-cr](https://github.com/CyebRageAnonymuos/ui-ux-cr)
 
