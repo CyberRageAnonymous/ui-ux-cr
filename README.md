@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔥 UI UX CR — Cyber-Rage Design Intelligence Engine
+# UI UX CR — Cyber-Rage Design Intelligence Engine
 
 **Ultra-premium design intelligence engine — 29 tools in one skill.**
 
